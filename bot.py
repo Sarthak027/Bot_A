@@ -4,7 +4,7 @@ import base64
 import time
 import asyncio
 import requests
-from telegram import Update, Document
+from telegram import Update, PhotoSize, Video
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from config import BOT_TOKEN, ADMIN_ID, BOT_USERNAME, SHORTNER_API_KEY
 
@@ -59,7 +59,7 @@ def short_url(long_url):
     except:
         return long_url
 
-# Command Handlers
+# START Command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     args = context.args
@@ -89,7 +89,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for file_path in token_data["files"]:
         try:
             with open(file_path, "rb") as f:
-                msg = await context.bot.send_document(chat_id=update.effective_chat.id, document=f)
+                ext = os.path.splitext(file_path)[1]
+                if ext in [".jpg", ".jpeg", ".png"]:
+                    msg = await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f)
+                elif ext in [".mp4", ".mov", ".avi"]:
+                    msg = await context.bot.send_video(chat_id=update.effective_chat.id, video=f)
+                else:
+                    continue
 
             # Schedule deletion after 15 minutes
             async def delete_later(chat_id, message_id):
@@ -103,12 +109,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await update.message.reply_text(f"⚠️ Failed to send file: {file_path}")
 
+# UPLOAD Handler (Admin Only)
 async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        return
-
-    if not update.message.document:
-        await update.message.reply_text("📎 Please send a document.")
         return
 
     chat_data = context.chat_data
@@ -119,16 +122,30 @@ async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_data["token"] = token
         TOKENS[token] = {"created": time.time(), "files": []}
 
-    doc: Document = update.message.document
-    file = await doc.get_file()
-    file_path = f"files/{doc.file_unique_id}_{doc.file_name}"
+    file_path = None
+    file_name = None
 
+    if update.message.photo:
+        photo: PhotoSize = update.message.photo[-1]
+        file = await photo.get_file()
+        file_name = f"{photo.file_unique_id}.jpg"
+    elif update.message.video:
+        video: Video = update.message.video
+        file = await video.get_file()
+        file_name = f"{video.file_unique_id}.mp4"
+    else:
+        await update.message.reply_text("❌ Only photos and videos are accepted.")
+        return
+
+    file_path = f"files/{file_name}"
     await file.download_to_drive(file_path)
+
     TOKENS[token]["files"].append(file_path)
     save_json(TOKEN_DB, TOKENS)
 
     await update.message.reply_text(f"✅ File saved under token: `{token}`", parse_mode="Markdown")
 
+# FINISH Handler - Generates Shortlink
 async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -145,9 +162,11 @@ async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔗 Protected Link:\n{shortlink}")
     context.chat_data["token"] = None
 
+# BUY Premium
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("💳 Send ₹99 to @Lordslayer5 and reply with your screenshot. You’ll be manually upgraded.")
 
+# ADD Premium
 async def add_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -168,7 +187,9 @@ def main():
     app.add_handler(CommandHandler("finish", finish))
     app.add_handler(CommandHandler("buy", buy))
     app.add_handler(CommandHandler("addpremium", add_premium))
-    app.add_handler(MessageHandler(filters.Document.ALL, upload))
+
+    # Accept only photo or video
+    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, upload))
 
     app.run_polling()
 
